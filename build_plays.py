@@ -4,7 +4,9 @@ extreme-PPA plays, kickoffs, and fourth-down plays, flag garbage-time
 plays, and save the result for the rating model.
 
 Reads:   data/raw/plays_<year>_<type>_wkNN.json
-Writes:  data/processed/plays.parquet   (remaining plays, with an is_garbage flag)
+Writes:  data/processed/plays.parquet       (remaining plays, with an is_garbage flag)
+         data/processed/plays_all.parquet   (every play, unfiltered, with an is_garbage flag;
+                                             used by drive-based stats)
 
 Setup:
     pip install pandas pyarrow
@@ -27,7 +29,7 @@ PROCESSED = Path("data/processed")
 # than the threshold for its quarter. Overtime is never garbage time.
 # These are tunable: later we can backtest different values and keep
 # whichever makes the ratings predict games best.
-GARBAGE_MARGIN_BY_QUARTER = {1: 43, 2: 33, 3: 25, 4: 17}
+GARBAGE_MARGIN_BY_QUARTER = {1: 43, 2: 37, 3: 27, 4: 21}
 
 # Plays removed outright, before the garbage-time flag is computed.
 # PPA outside [PPA_MIN, PPA_MAX] is dropped (plays with no PPA are kept here;
@@ -142,10 +144,13 @@ def summarize(plays: pd.DataFrame) -> None:
 
 def main():
     plays = load_plays()
-    plays = filter_plays(plays)
+    plays["ppa"] = pd.to_numeric(plays["ppa"], errors="coerce")
     plays = flag_garbage(plays)
 
     PROCESSED.mkdir(parents=True, exist_ok=True)
+    plays.to_parquet(PROCESSED / "plays_all.parquet", index=False)  # every play, unfiltered
+
+    plays = filter_plays(plays)
     out = PROCESSED / "plays.parquet"
     plays.to_parquet(out, index=False)
 
