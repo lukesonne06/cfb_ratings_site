@@ -209,7 +209,8 @@ PAGE = """<!doctype html>
     (lower is better). Net = Off minus Def, in percentage points. SOS is the average opposing
     offense faced minus the average opposing defense faced, so positive means a tougher
     schedule. Garbage time is excluded, and only games between FBS teams count toward the
-    ratings. Small numbers next to a value are its national rank. Records and point
+    ratings. Yardage is adjusted for home field: a home team's yards are scaled down 10% and
+    a road team's scaled up 10%, with neutral-site games left alone. Small numbers next to a value are its national rank. Records and point
     differential are as of the selected week.
     Through a team's first 8 games, its rating is a blend of its final rating from last season and
     its rating from this season so far: with g games played, this season counts for g/8 and last
