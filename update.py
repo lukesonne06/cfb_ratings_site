@@ -7,8 +7,9 @@ cfbd_gather.py separately.
 Steps, in order:
     1. build_plays.py       combine play files, flag garbage time
     2. raw_ratings.py       raw offense/defense PPA per play
-    3. adjusted_ratings.py  opponent-adjusted ratings
-    4. build_site.py        write site/index.html
+    3. adjusted_ratings.py  opponent-adjusted PPA ratings
+    4. weekly_yard_pct.py   week-by-week yard pct ratings (feeds the site)
+    5. build_site.py        write site/index.html
 
 Run (from the folder containing these scripts and the data/ folder):
     python update.py
@@ -25,6 +26,7 @@ STEPS = [
     "build_plays.py",
     "raw_ratings.py",
     "adjusted_ratings.py",
+    "weekly_yard_pct.py",
     "build_site.py",
 ]
 

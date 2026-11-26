@@ -3,3 +3,6 @@
 /raw_ratings.py
 /__pycache__
 raw_yard_pct.py
+adjusted_yard_pct.py
+.gitignore
+weekly_yard_pct.py

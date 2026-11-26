@@ -1,8 +1,8 @@
 """
-Build a static ratings page from the cached CFBD data.
+Build a static ratings page with week-by-week rankings.
 
 Reads:   data/raw/teams_fbs.json, data/raw/games_<year>_*.json,
-         data/processed/team_adjusted_ratings.csv
+         data/processed/team_weekly_yard_pct.csv
 Writes:  site/index.html  (self-contained: open it in a browser)
 
 Run:
@@ -19,6 +19,7 @@ PROCESSED = Path("data/processed")
 OUT = Path("site")
 
 CURRENT_SEASON = 2026
+POSTSEASON_WEEK = 16  # must match weekly_yard_pct.py
 
 
 def pick(d: dict, *keys):
@@ -42,44 +43,59 @@ def load_games(season: int) -> list:
     return games
 
 
-def load_ratings() -> dict:
-    """{(season, team): {...}} from the adjusted ratings CSV, scaled to per 100 plays."""
-    path = PROCESSED / "team_adjusted_ratings.csv"
-    if not path.exists():
-        raise SystemExit("Missing team_adjusted_ratings.csv. Run adjusted_ratings.py first.")
+def game_week(g: dict) -> int:
+    """Week index of a game; all postseason games share one final week."""
+    if pick(g, "seasonType", "season_type") == "postseason":
+        return POSTSEASON_WEEK
+    week = pick(g, "week")
+    return int(week) if week is not None else POSTSEASON_WEEK
 
-    def num(v, scale=1.0, ndigits=1):
-        return round(float(v) * scale, ndigits) if v not in ("", None) else None
+
+def load_weekly():
+    """Ratings by (season, week, team), plus the list of weeks per season."""
+    path = PROCESSED / "team_weekly_yard_pct.csv"
+    if not path.exists():
+        raise SystemExit("Missing team_weekly_yard_pct.csv. Run weekly_yard_pct.py first.")
+
+    def num(v, ndigits=1):
+        return round(float(v), ndigits) if v not in ("", None) else None
 
     def rank(v):
         return int(float(v)) if v not in ("", None) else None
 
-    ratings = {}
+    ratings, weeks = {}, {}
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
-            ratings[(int(r["season"]), r["team"])] = {
-                "off": num(r["adj_off"], 100),
-                "def": num(r["adj_def"], 100),
-                "net": num(r["adj_net"], 100),
-                "sos": num(r["sos"], 100),
-                "offRank": rank(r["adj_off_rank"]),
-                "defRank": rank(r["adj_def_rank"]),
-                "netRank": rank(r["adj_net_rank"]),
+            season, week = int(r["season"]), int(r["week"])
+            weeks.setdefault(season, set()).add(week)
+
+            opp_off, opp_def = r["opp_off_faced"], r["opp_def_faced"]
+            sos = (round(float(opp_off) - float(opp_def), 1)
+                   if opp_off not in ("", None) and opp_def not in ("", None) else None)
+
+            ratings[(season, week, r["team"])] = {
+                "off": num(r["adj_off_pct"]),
+                "def": num(r["adj_def_pct"]),
+                "net": num(r["adj_net_pct"]),
+                "sos": sos,
+                "offRank": rank(r["adj_off_pct_rank"]),
+                "defRank": rank(r["adj_def_pct_rank"]),
+                "netRank": rank(r["adj_net_pct_rank"]),
+                "gp": int(float(r["games"])),
+                "wt": round(float(r["weight"]) * 100),
             }
-    return ratings
+    return ratings, {s: sorted(w) for s, w in weeks.items()}
 
 
 def blank(team: dict) -> dict:
-    logos = team.get("logos") or []
     return {
         "team": team["school"],
-        "conf": team.get("conference") or "",
-        "logo": logos[0] if logos else "",
         "w": 0, "l": 0, "t": 0,
         "cw": 0, "cl": 0, "ct": 0,
         "pf": 0, "pa": 0,
         "off": None, "def": None, "net": None, "sos": None,
         "offRank": None, "defRank": None, "netRank": None,
+        "gp": None, "wt": None,
     }
 
 
@@ -142,7 +158,7 @@ PAGE = """<!doctype html>
     margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
     font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .wrap { max-width: 1040px; margin: 0 auto; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 16px; }
   .note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
@@ -152,7 +168,7 @@ PAGE = """<!doctype html>
     background: var(--bg); color: var(--fg); font: inherit;
   }
   .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
-  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  table { border-collapse: collapse; width: 100%; min-width: 820px; }
   th, td { padding: 8px 10px; text-align: right; white-space: nowrap; }
   th:nth-child(-n+3), td:nth-child(-n+3) { text-align: left; }
   th { background: var(--head); cursor: pointer; user-select: none; font-weight: 600; }
@@ -164,6 +180,7 @@ PAGE = """<!doctype html>
   .rank { color: var(--muted); width: 40px; }
   .r { color: var(--muted); font-size: 11px; margin-left: 4px; }
   .pos { color: var(--good); } .neg { color: var(--bad); }
+  .dim { color: var(--muted); }
   .foot { color: var(--muted); font-size: 13px; margin-top: 16px; }
 </style>
 </head>
@@ -174,6 +191,7 @@ PAGE = """<!doctype html>
   <p class="note" id="note"></p>
   <div class="controls">
     <select id="season"></select>
+    <select id="week"></select>
     <input id="search" type="search" placeholder="Search teams">
     <select id="conf"><option value="">All conferences</option></select>
   </div>
@@ -184,17 +202,28 @@ PAGE = """<!doctype html>
     </table>
   </div>
   <p class="foot">
-    Ratings are opponent-adjusted PPA (predicted points added) per 100 plays, excluding
-    garbage time. Off: points above average per 100 plays against an average defense.
-    Def: points allowed per 100 plays against an average offense (lower is better).
-    Net = Off - Def. SOS is the average net rating of opponents faced. Small numbers
-    next to a value are its national rank.
+    Ratings are built from drives. At the start of each possession, the offense has some
+    number of yards to the goal line available; the rating is the share of those available
+    yards the offense gained, adjusted for the quality of the opponents faced. Off: the share
+    of available yards an offense gains (higher is better). Def: the share a defense allows
+    (lower is better). Net = Off minus Def, in percentage points. SOS is the average opposing
+    offense faced minus the average opposing defense faced, so positive means a tougher
+    schedule. Garbage time is excluded, and only games between FBS teams count toward the
+    ratings. Small numbers next to a value are its national rank. Records and point
+    differential are as of the selected week.
+    Through a team's first 8 games, its rating is a blend of its final rating from last season and
+    its rating from this season so far: with g games played, this season counts for g/8 and last
+    season for the rest. The This Yr column shows that share. The Preseason view is last season's
+    final ratings.
   </p>
 </div>
 <script>
-const DATA = __DATA__;
+const DATA = __DATA__;       // DATA[season][week] -> list of team rows
+const TEAMS = __TEAMS__;     // team -> { conf, logo }
 const SEASONS = __SEASONS__;
+const NAT = __NAT__;         // NAT[season][week] -> average Off % that snapshot
 const CURRENT_SEASON = __CURRENT__;
+const POST_WEEK = __POSTWEEK__;
 
 const COLS = [
   { key: "rank", label: "#", first: 1 },
@@ -203,25 +232,37 @@ const COLS = [
   { key: "pct", label: "Record", first: -1 },
   { key: "cpct", label: "Conf Rec", first: -1 },
   { key: "net", label: "Net", first: -1 },
-  { key: "off", label: "Off", first: -1 },
-  { key: "def", label: "Def", first: 1 },
+  { key: "off", label: "Off %", first: -1 },
+  { key: "def", label: "Def %", first: 1 },
   { key: "sos", label: "SOS", first: -1 },
+  { key: "wt", label: "This Yr", first: -1 },
   { key: "diff", label: "Pt Diff", first: -1 },
 ];
 
+const dash = "\\u2013";
 const fmtRec = (w, l, t) => t ? `${w}-${l}-${t}` : `${w}-${l}`;
 const pct = (w, l, t) => (w + l + t) ? (w + t / 2) / (w + l + t) : 0;
-const num = v => v === null || v === undefined ? "\u2013" : (v > 0 ? "+" : "") + v.toFixed(1);
-const withRank = (v, r) => v === null ? "\u2013" : `${num(v)}<span class="r">${r}</span>`;
+const signed = v => v === null || v === undefined ? dash : (v > 0 ? "+" : "") + v.toFixed(1);
+const level = v => v === null || v === undefined ? dash : v.toFixed(1) + "%";
+const withRank = (v, r, fmt) => v === null ? dash : `${fmt(v)}<span class="r">${r}</span>`;
+// dir = 1: above the national average is good. dir = -1: below is good.
+const cls = (v, nat, dir) => v === null ? "" : (dir * (v - nat) > 0 ? "pos" : dir * (v - nat) < 0 ? "neg" : "");
 
-Object.values(DATA).forEach(rows => rows.forEach(r => {
+const weekLabel = w => w === 0 ? "Preseason" : w === POST_WEEK ? "Final (after bowls)" : `After week ${w}`;
+const weeksOf = s => Object.keys(DATA[s]).map(Number).sort((a, b) => a - b);
+
+Object.values(DATA).forEach(byWeek => Object.values(byWeek).forEach(rows => rows.forEach(r => {
+  const t = TEAMS[r.team] || {};
+  r.conf = t.conf || "";
+  r.logo = t.logo || "";
   r.pct = pct(r.w, r.l, r.t);
   r.cpct = pct(r.cw, r.cl, r.ct);
   r.diff = r.pf - r.pa;
   r.rank = r.netRank;
-}));
+})));
 
 let season = SEASONS[0];
+let week = weeksOf(season).slice(-1)[0];
 let sortKey = "net", sortDir = -1;
 
 function compare(a, b) {
@@ -237,31 +278,40 @@ function compare(a, b) {
 function render() {
   const q = document.getElementById("search").value.toLowerCase();
   const conf = document.getElementById("conf").value;
-  const rows = DATA[season]
+  const all = DATA[season][week];
+  const nat = NAT[season][week];
+  const rows = all
     .filter(r => (!conf || r.conf === conf) && r.team.toLowerCase().includes(q))
     .sort(compare);
 
   document.getElementById("sub").textContent =
-    `${season} season, FBS teams. Click a column header to re-sort.`;
-  document.getElementById("note").textContent = season === CURRENT_SEASON
-    ? "This season is in progress: ratings rest on a small number of games and are pulled toward average."
-    : "";
+    `${season} season, ${weekLabel(week)}. National average: ${nat.toFixed(1)}% of available yards gained per drive. Click a column header to re-sort.`;
+
+  const notes = [];
+  if (all.some(r => r.wt !== null && r.wt < 100)) {
+    notes.push("Teams with fewer than 8 rated games have ratings that blend last season's final rating with this season so far. The This Yr column shows the share coming from this season.");
+  }
+  if (season === CURRENT_SEASON && week === weeksOf(season).slice(-1)[0]) {
+    notes.push("This season is in progress.");
+  }
+  document.getElementById("note").textContent = notes.join(" ");
 
   document.getElementById("head").innerHTML = COLS.map(c =>
-    `<th data-key="${c.key}" class="${c.key === sortKey ? "active" : ""}">${c.label}${c.key === sortKey ? (sortDir < 0 ? " \u25BC" : " \u25B2") : ""}</th>`
+    `<th data-key="${c.key}" class="${c.key === sortKey ? "active" : ""}">${c.label}${c.key === sortKey ? (sortDir < 0 ? " \\u25BC" : " \\u25B2") : ""}</th>`
   ).join("");
 
   document.getElementById("body").innerHTML = rows.map(r => `
     <tr>
-      <td class="rank">${r.rank === null ? "\u2013" : r.rank}</td>
+      <td class="rank">${r.rank === null ? dash : r.rank}</td>
       <td><div class="team">${r.logo ? `<img src="${r.logo}" alt="" onerror="this.style.display='none'">` : ""}${r.team}</div></td>
       <td>${r.conf}</td>
       <td>${fmtRec(r.w, r.l, r.t)}</td>
       <td>${fmtRec(r.cw, r.cl, r.ct)}</td>
-      <td class="${r.net > 0 ? "pos" : r.net < 0 ? "neg" : ""}">${withRank(r.net, r.netRank)}</td>
-      <td class="${r.off > 0 ? "pos" : r.off < 0 ? "neg" : ""}">${withRank(r.off, r.offRank)}</td>
-      <td class="${r.def < 0 ? "pos" : r.def > 0 ? "neg" : ""}">${withRank(r.def, r.defRank)}</td>
-      <td>${num(r.sos)}</td>
+      <td class="${r.net > 0 ? "pos" : r.net < 0 ? "neg" : ""}">${withRank(r.net, r.netRank, signed)}</td>
+      <td class="${cls(r.off, nat, 1)}">${withRank(r.off, r.offRank, level)}</td>
+      <td class="${cls(r.def, nat, -1)}">${withRank(r.def, r.defRank, level)}</td>
+      <td>${signed(r.sos)}</td>
+      <td class="dim">${r.wt === null ? dash : r.wt + "%"}</td>
       <td class="${r.diff > 0 ? "pos" : r.diff < 0 ? "neg" : ""}">${r.diff > 0 ? "+" : ""}${r.diff}</td>
     </tr>`).join("");
 
@@ -274,21 +324,43 @@ function render() {
 }
 
 const seasonSelect = document.getElementById("season");
+const weekSelect = document.getElementById("week");
+
+function fillWeeks() {
+  weekSelect.innerHTML = "";
+  weeksOf(season).forEach(w => {
+    const o = document.createElement("option");
+    o.value = w;
+    o.textContent = weekLabel(w);
+    weekSelect.appendChild(o);
+  });
+  weekSelect.value = week;
+}
+
 SEASONS.forEach(s => {
   const o = document.createElement("option");
   o.value = o.textContent = s;
   seasonSelect.appendChild(o);
 });
-seasonSelect.onchange = () => { season = +seasonSelect.value; render(); };
+seasonSelect.onchange = () => {
+  season = +seasonSelect.value;
+  week = weeksOf(season).slice(-1)[0];   // jump to the latest week of that season
+  fillWeeks();
+  render();
+};
+weekSelect.onchange = () => { week = +weekSelect.value; render(); };
 
 const confSelect = document.getElementById("conf");
-[...new Set(Object.values(DATA).flat().map(r => r.conf).filter(Boolean))].sort().forEach(c => {
+[...new Set(Object.values(TEAMS).map(t => t.conf).filter(Boolean))].sort().forEach(c => {
   const o = document.createElement("option");
   o.value = o.textContent = c;
   confSelect.appendChild(o);
 });
 confSelect.onchange = render;
 document.getElementById("search").oninput = render;
+
+seasonSelect.value = season;
+fillWeeks();
 render();
 </script>
 </body>
@@ -298,21 +370,39 @@ render();
 
 def main():
     teams = load_teams()
-    ratings = load_ratings()
-    seasons = sorted({s for s, _ in ratings}, reverse=True)
+    ratings, week_map = load_weekly()
+    seasons = sorted(week_map, reverse=True)
 
-    data = {}
+    team_info = {
+        name: {"conf": t.get("conference") or "", "logo": (t.get("logos") or [""])[0]}
+        for name, t in teams.items()
+    }
+
+    data, nat = {}, {}
     for season in seasons:
-        rows = build_records(teams, load_games(season))
-        for name, row in rows.items():
-            row.update(ratings.get((season, name), {}))
-        data[season] = list(rows.values())
+        games = load_games(season)
+        data[season], nat[season] = {}, {}
 
-    payload = json.dumps(data).replace("</", "<\\/")
+        for week in week_map[season]:
+            through = [g for g in games if game_week(g) <= week]
+            rows = build_records(teams, through)
+            for name, row in rows.items():
+                row.update(ratings.get((season, week, name), {}))
+            data[season][week] = list(rows.values())
+
+            offs = [r["off"] for r in data[season][week] if r["off"] is not None]
+            nat[season][week] = round(sum(offs) / len(offs), 2) if offs else 0.0
+
+    def dump(obj):
+        return json.dumps(obj, separators=(",", ":")).replace("</", "<\\/")
+
     html = (
-        PAGE.replace("__DATA__", payload)
+        PAGE.replace("__DATA__", dump(data))
+        .replace("__TEAMS__", dump(team_info))
         .replace("__SEASONS__", json.dumps(seasons))
+        .replace("__NAT__", dump(nat))
         .replace("__CURRENT__", str(CURRENT_SEASON))
+        .replace("__POSTWEEK__", str(POSTSEASON_WEEK))
     )
 
     OUT.mkdir(exist_ok=True)
@@ -320,9 +410,9 @@ def main():
     out_path.write_text(html, encoding="utf-8")
 
     for season in seasons:
-        rated = sum(1 for r in data[season] if r["net"] is not None)
-        print(f"{season}: {len(data[season])} teams, {rated} with ratings")
-    print(f"Wrote {out_path.resolve()}")
+        print(f"{season}: {len(week_map[season])} week snapshots "
+              f"({week_map[season][0]} to {week_map[season][-1]})")
+    print(f"Wrote {out_path.resolve()} ({out_path.stat().st_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":
