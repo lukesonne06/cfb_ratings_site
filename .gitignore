@@ -6,3 +6,4 @@ raw_yard_pct.py
 adjusted_yard_pct.py
 .gitignore
 weekly_yard_pct.py
+points_model.py
